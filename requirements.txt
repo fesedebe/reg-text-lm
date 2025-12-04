@@ -1,0 +1,11 @@
+pandas
+openpyxl
+tqdm
+python-dotenv
+openai>=1.0.0
+torch
+transformers
+datasets
+accelerate
+peft
+bitsandbytes

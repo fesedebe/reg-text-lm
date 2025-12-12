@@ -9,3 +9,4 @@ datasets
 accelerate
 peft
 bitsandbytes
+scikit-learn

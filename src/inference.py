@@ -1,40 +1,48 @@
 import os
 import json
 from dataclasses import dataclass
-from typing import Dict, Any, List
 
+import pandas as pd
 import torch
 from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
+    BitsAndBytesConfig,
 )
 from peft import PeftModel
+from config import OUTPUT_DIR
 
 # Config
 @dataclass
 class InferenceConfig:
-    base_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
-    lora_path: str = "output/qwen25b-qlora"
+    base_model: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    lora_path: str = str(OUTPUT_DIR / "final_adapter")
     test_path: str = "data/processed/qlora_test.jsonl"
-    output_path: str = "output/test_predictions.jsonl"
+    output_path: str = str(OUTPUT_DIR / "test_predictions.jsonl")
     max_new_tokens: int = 256
     temperature: float = 0.2
     top_p: float = 0.95
 
+    # Must match training system prompt
     system_prompt: str = (
-        "You restate legal and regulatory obligations in clear plain language for "
-        "non-legal audiences, preserving ALL meaning, conditions, exceptions, and citations. "
-        "Do not soften requirements or omit edge cases. Do not add explanations, interpretations, "
-        "summaries, or new sentences. Rewrite only what is present in the original text, using "
-        "simpler wording while keeping the full legal meaning intact."
+        "You rewrite legal text in plain English that non-lawyers can understand. "
+        "Preserve ALL information, dates, names, citations, conditions, and exceptions exactly. "
+        "Use simpler words but keep the full legal meaning intact. "
+        "Do not soften requirements, omit edge cases, or add explanations."
     )
 
 # Helper: Chat Formatting
 def build_prompt(instruction: str, text: str, tokenizer, config: InferenceConfig):
+    # Match training format exactly
+    if instruction:
+        user_content = f"{instruction}\n\n{text}"
+    else:
+        user_content = text
+
     messages = [
         {"role": "system", "content": config.system_prompt},
-        {"role": "user", "content": instruction + "\n\nOriginal obligation:\n" + text},
+        {"role": "user", "content": user_content},
     ]
 
     return tokenizer.apply_chat_template(
@@ -51,10 +59,17 @@ def load_model_and_tokenizer(config: InferenceConfig):
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
+    # 4-bit quantization config (same as training)
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.float16,  # FP16 for T4
+    )
+
     base_model = AutoModelForCausalLM.from_pretrained(
         config.base_model,
-        load_in_4bit=True,
-        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
     )
@@ -64,7 +79,7 @@ def load_model_and_tokenizer(config: InferenceConfig):
 
     return model, tokenizer
 
-def run_inference():
+def run_inference(save_excel: bool = False):
     config = InferenceConfig()
 
     ds = load_dataset("json", data_files={"test": config.test_path})["test"]
@@ -72,8 +87,9 @@ def run_inference():
 
     os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
     out_f = open(config.output_path, "w")
+    records = []
 
-    print(f"Running inference on {len(ds)} test examples\n")
+    print(f"Running inference on {len(ds)} examples\n")
 
     for ex in ds:
         instruction = ex.get("instruction", "").strip()
@@ -92,27 +108,29 @@ def run_inference():
                 temperature=config.temperature,
                 top_p=config.top_p,
                 do_sample=(config.temperature > 0),
+                pad_token_id=tokenizer.eos_token_id,
             )
 
-        decoded = tokenizer.decode(gen_tokens[0], skip_special_tokens=True)
+        # Only decode newly generated tokens (not the prompt)
+        new_tokens = gen_tokens[0][inputs["input_ids"].shape[1]:]
+        model_output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
-        # Extract model output after the last assistant tag
-        if "<|im_start|>assistant" in decoded:
-            model_output = decoded.split("<|im_start|>assistant")[-1].strip()
-        else:
-            model_output = decoded
-
-        # Write JSONL record
         record = {
             "instruction": instruction,
             "input": original,
             "gold_output": gold,
             "model_output": model_output,
         }
+        records.append(record)
         out_f.write(json.dumps(record) + "\n")
 
     out_f.close()
-    print(f"Saved test predictions to: {config.output_path}")
+    print(f"Saved predictions to: {config.output_path}")
+
+    if save_excel:
+        excel_path = config.output_path.replace(".jsonl", ".xlsx")
+        pd.DataFrame(records).to_excel(excel_path, index=False)
+        print(f"Saved predictions to: {excel_path}")
 
 if __name__ == "__main__":
-    run_inference()
+    run_inference(save_excel=True)

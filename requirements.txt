@@ -9,4 +9,6 @@ datasets
 accelerate
 peft
 bitsandbytes
+trl
 scikit-learn
+tensorboard

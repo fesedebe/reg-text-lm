@@ -1,6 +1,10 @@
+#inference.py
+#Inference script for fine-tuned Llama 3.1 8B or Qwen2.5-7B models.
+#
+#Usage: "python inference.py --model" (qwen default) or "python inference.py --model llama"  
+
 import os
 import json
-from dataclasses import dataclass
 
 import pandas as pd
 import torch
@@ -11,29 +15,16 @@ from transformers import (
     BitsAndBytesConfig,
 )
 from peft import PeftModel
-from config import OUTPUT_DIR
 
-# Config
-@dataclass
-class InferenceConfig:
-    base_model: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-    lora_path: str = str(OUTPUT_DIR / "final_adapter")
-    test_path: str = "data/processed/qlora_test.jsonl"
-    output_path: str = str(OUTPUT_DIR / "test_predictions.jsonl")
-    max_new_tokens: int = 256
-    temperature: float = 0.2
-    top_p: float = 0.95
-
-    # Must match training system prompt
-    system_prompt: str = (
-        "You rewrite legal text in plain English that non-lawyers can understand. "
-        "Preserve ALL information, dates, names, citations, conditions, and exceptions exactly. "
-        "Use simpler words but keep the full legal meaning intact. "
-        "Do not soften requirements, omit edge cases, or add explanations."
-    )
+from config import (
+    model_config,
+    data_config,
+    inference_config,
+    OUTPUT_DIR,
+)
 
 # Helper: Chat Formatting
-def build_prompt(instruction: str, text: str, tokenizer, config: InferenceConfig):
+def build_prompt(instruction: str, text: str, tokenizer):
     # Match training format exactly
     if instruction:
         user_content = f"{instruction}\n\n{text}"
@@ -41,7 +32,7 @@ def build_prompt(instruction: str, text: str, tokenizer, config: InferenceConfig
         user_content = text
 
     messages = [
-        {"role": "system", "content": config.system_prompt},
+        {"role": "system", "content": data_config.system_prompt},
         {"role": "user", "content": user_content},
     ]
 
@@ -52,41 +43,49 @@ def build_prompt(instruction: str, text: str, tokenizer, config: InferenceConfig
     )
 
 # Load Model, LoRA adapters, and Tokenizer
-def load_model_and_tokenizer(config: InferenceConfig):
+def load_model_and_tokenizer():
+    lora_path = str(OUTPUT_DIR / "final_adapter")
+    
     tokenizer = AutoTokenizer.from_pretrained(
-        config.lora_path, trust_remote_code=True
+        lora_path, trust_remote_code=True
     )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
     # 4-bit quantization config (same as training)
+    compute_dtype = getattr(torch, model_config.bnb_4bit_compute_dtype)
     bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.float16,  # FP16 for T4
+        load_in_4bit=model_config.load_in_4bit,
+        bnb_4bit_quant_type=model_config.bnb_4bit_quant_type,
+        bnb_4bit_use_double_quant=model_config.bnb_4bit_use_double_quant,
+        bnb_4bit_compute_dtype=compute_dtype,
     )
 
     base_model = AutoModelForCausalLM.from_pretrained(
-        config.base_model,
+        model_config.model_name,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
     )
 
-    model = PeftModel.from_pretrained(base_model, config.lora_path)
+    model = PeftModel.from_pretrained(base_model, lora_path)
     model.eval()
 
     return model, tokenizer
 
 def run_inference(save_excel: bool = False):
-    config = InferenceConfig()
+    test_path = data_config.test_file
+    output_path = str(OUTPUT_DIR / "test_filtered_predictions.jsonl")
 
-    ds = load_dataset("json", data_files={"test": config.test_path})["test"]
-    model, tokenizer = load_model_and_tokenizer(config)
+    print(f"Model: {model_config.model_name} ({model_config.model_key})")
+    print(f"Adapter: {OUTPUT_DIR / 'final_adapter'}")
+    print(f"Test data: {test_path}")
 
-    os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
-    out_f = open(config.output_path, "w")
+    ds = load_dataset("json", data_files={"test": test_path})["test"]
+    model, tokenizer = load_model_and_tokenizer()
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    out_f = open(output_path, "w")
     records = []
 
     print(f"Running inference on {len(ds)} examples\n")
@@ -97,17 +96,17 @@ def run_inference(save_excel: bool = False):
         gold = ex.get("output", "").strip()
 
         # Build prompt
-        prompt = build_prompt(instruction, original, tokenizer, config)
+        prompt = build_prompt(instruction, original, tokenizer)
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
         # Generate output
         with torch.no_grad():
             gen_tokens = model.generate(
                 **inputs,
-                max_new_tokens=config.max_new_tokens,
-                temperature=config.temperature,
-                top_p=config.top_p,
-                do_sample=(config.temperature > 0),
+                max_new_tokens=inference_config.max_new_tokens,
+                temperature=inference_config.temperature,
+                top_p=inference_config.top_p,
+                do_sample=(inference_config.temperature > 0),
                 pad_token_id=tokenizer.eos_token_id,
             )
 
@@ -125,10 +124,10 @@ def run_inference(save_excel: bool = False):
         out_f.write(json.dumps(record) + "\n")
 
     out_f.close()
-    print(f"Saved predictions to: {config.output_path}")
+    print(f"Saved predictions to: {output_path}")
 
     if save_excel:
-        excel_path = config.output_path.replace(".jsonl", ".xlsx")
+        excel_path = output_path.replace(".jsonl", ".xlsx")
         pd.DataFrame(records).to_excel(excel_path, index=False)
         print(f"Saved predictions to: {excel_path}")
 

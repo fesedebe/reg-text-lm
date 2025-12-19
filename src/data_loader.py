@@ -1,4 +1,5 @@
-#Transforms JSONL data into Llama 3.1 chat format
+#data_loader.py
+#Transforms JSONL data into chat format for Llama 3.1 or Qwen2.5
 
 import json
 from pathlib import Path
@@ -20,7 +21,7 @@ def format_chat_message(
     instruction: Optional[str] = None,
     system_prompt: Optional[str] = None
 ) -> List[Dict[str, str]]:
-    #Format input/output into Llama 3.1 chat message format with system prompt
+    #Format input/output into chat message format with system prompt
     messages = []
     
     if system_prompt:
@@ -47,12 +48,12 @@ def format_chat_message(
     
     return messages
 
-def format_llama_chat(
+def format_chat(
     example: Dict[str, Any],
     tokenizer: Any,
     system_prompt: str
 ) -> str:
-    #Format example using Llama 3.1 chat template
+    #Format example using model's chat template (works for Llama and Qwen)
     messages = format_chat_message(
         input_text=example.get("input", "").strip(),
         output_text=example.get("output", "").strip(),
@@ -88,8 +89,13 @@ def prepare_inference_prompt(
     
     return prompt
 
+# Backwards compatibility alias
+format_llama_chat = format_chat
+
 if __name__ == "__main__":
-    from config import data_config
+    from config import data_config, model_config
+    
+    print(f"Selected model: {model_config.model_key} ({model_config.model_name})")
     
     ds = load_hf_dataset(data_config.train_file)
     print(f"Loaded {len(ds)} training examples")

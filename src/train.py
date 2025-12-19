@@ -1,4 +1,8 @@
-#QLoRA fine-tuning script for Llama 3.1 8B Instruct, trained to simplify legal text to plain English.
+#train.py
+#QLoRA fine-tuning script for Llama 3.1 8B Instruct or Qwen2.5-7B-Instruct,
+#trained to simplify legal text to plain English.
+#
+#Usage: "python train.py --model" (qwen default) or "python train.py --model llama"  
 
 import os
 import torch
@@ -19,14 +23,14 @@ from config import (
     data_config,
     OUTPUT_DIR,
 )
-from data_loader import load_hf_dataset, format_llama_chat
+from data_loader import load_hf_dataset, format_chat
 
 def build_tokenizer(model_name: str):
     #Initialize tokenizer with proper padding
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
+    tokenizer.padding_side = "left" #"right"
     return tokenizer
 
 def setup_quantization_config() -> BitsAndBytesConfig:
@@ -111,6 +115,8 @@ def build_training_args() -> SFTConfig:
         
         # SFT-specific
         max_length=training_config.max_seq_length,
+        completion_only_loss=False,  
+        dataset_text_field="text", 
         
         # Misc
         seed=training_config.seed,
@@ -120,24 +126,33 @@ def build_training_args() -> SFTConfig:
 
 def train():
     # Training orchestration
-    print(f"Model: {model_config.model_name}")
+    print(f"Model: {model_config.model_name} ({model_config.model_key})")
     print(f"Data: {data_config.train_file}")
     print(f"Output: {OUTPUT_DIR}")
     
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
+    tokenizer = build_tokenizer(model_config.model_name)
+    system_prompt = data_config.system_prompt
+    
+    # Load and pre-format datasets
     train_ds = load_hf_dataset(data_config.train_file)
+    train_ds = train_ds.map(
+        lambda ex: {"text": format_chat(ex, tokenizer, system_prompt)},
+        remove_columns=train_ds.column_names,
+    )
     
     # Load validation set if exists
     val_ds = None
     if Path(data_config.val_file).exists():
         val_ds = load_hf_dataset(data_config.val_file)
-    
-    tokenizer = build_tokenizer(model_config.model_name)
+        val_ds = val_ds.map(
+            lambda ex: {"text": format_chat(ex, tokenizer, system_prompt)},
+            remove_columns=val_ds.column_names,
+        )
     
     model = load_qlora_model(model_config.model_name)
     training_args = build_training_args()
-    system_prompt = data_config.system_prompt
     print("\nDataset and model loaded. Starting training.")
     
     trainer = SFTTrainer(
@@ -146,9 +161,7 @@ def train():
         processing_class=tokenizer,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        formatting_func=lambda ex: format_llama_chat(ex, tokenizer, system_prompt),
     )
-    
     trainer.train()
     
     # Saving model and tokenizer

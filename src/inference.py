@@ -1,20 +1,14 @@
 #inference.py
-#Inference script for fine-tuned Llama 3.1 8B or Qwen2.5-7B models.
+#Inference script for fine-tuned Qwen2.5-7B or Llama 3.1 8B models.
+#Supports both local model loading and API calls to served model.
 #
-#Usage: "python inference.py --model" (qwen default) or "python inference.py --model llama"  
+#Usage: "python inference.py" (qwen default) or "python inference.py --model llama"  
 
 import os
 import json
 
 import pandas as pd
-import torch
 from datasets import load_dataset
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig,
-)
-from peft import PeftModel
 
 from config import (
     model_config,
@@ -23,27 +17,29 @@ from config import (
     OUTPUT_DIR,
 )
 
-# Helper: Chat Formatting
-def build_prompt(instruction: str, text: str, tokenizer):
-    # Match training format exactly
+# local config
+USE_API = True  # True: call served model API, False: load model locally
+API_URL = "http://localhost:8000/v1"
+SAVE_EXCEL = True
+
+def build_messages(instruction: str, text: str) -> list:
+    #Build chat messages for both local and API inference
     if instruction:
         user_content = f"{instruction}\n\n{text}"
     else:
         user_content = text
 
-    messages = [
+    return [
         {"role": "system", "content": data_config.system_prompt},
         {"role": "user", "content": user_content},
     ]
 
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
-# Load Model, LoRA adapters, and Tokenizer
 def load_model_and_tokenizer():
+    #Load model locally with LoRA adapters
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+    from peft import PeftModel
+    
     lora_path = str(OUTPUT_DIR / "final_adapter")
     
     tokenizer = AutoTokenizer.from_pretrained(
@@ -52,7 +48,6 @@ def load_model_and_tokenizer():
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # 4-bit quantization config (same as training)
     compute_dtype = getattr(torch, model_config.bnb_4bit_compute_dtype)
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=model_config.load_in_4bit,
@@ -73,46 +68,84 @@ def load_model_and_tokenizer():
 
     return model, tokenizer
 
-def run_inference(save_excel: bool = False):
+def generate_local(messages: list, model, tokenizer) -> str:
+    #Generate using locally loaded model
+    import torch
+    
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+    with torch.no_grad():
+        gen_tokens = model.generate(
+            **inputs,
+            max_new_tokens=inference_config.max_new_tokens,
+            temperature=inference_config.temperature,
+            top_p=inference_config.top_p,
+            do_sample=(inference_config.temperature > 0),
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    new_tokens = gen_tokens[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+
+def generate_api(messages: list) -> str:
+    #Generate using served model API
+    from openai import OpenAI
+    
+    client = OpenAI(base_url=API_URL, api_key="unused")
+    
+    response = client.chat.completions.create(
+        model="legal-simplifier",
+        messages=messages,
+        temperature=inference_config.temperature,
+        max_tokens=inference_config.max_new_tokens,
+    )
+    
+    return response.choices[0].message.content.strip()
+
+def run_inference():
     test_path = data_config.test_file
     output_path = str(OUTPUT_DIR / "test_filtered_predictions.jsonl")
-
+    
+    mode = "API" if USE_API else "local"
     print(f"Model: {model_config.model_name} ({model_config.model_key})")
-    print(f"Adapter: {OUTPUT_DIR / 'final_adapter'}")
+    print(f"Mode: {mode}")
     print(f"Test data: {test_path}")
+    
+    if not USE_API:
+        print(f"Adapter: {OUTPUT_DIR / 'final_adapter'}")
+    else:
+        print(f"API URL: {API_URL}")
 
     ds = load_dataset("json", data_files={"test": test_path})["test"]
-    model, tokenizer = load_model_and_tokenizer()
+    
+    # Load model only if running locally
+    model, tokenizer = None, None
+    if not USE_API:
+        model, tokenizer = load_model_and_tokenizer()
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     out_f = open(output_path, "w")
     records = []
 
-    print(f"Running inference on {len(ds)} examples\n")
+    print(f"\nRunning inference on {len(ds)} examples\n")
 
-    for ex in ds:
+    for i, ex in enumerate(ds):
         instruction = ex.get("instruction", "").strip()
         original = ex.get("input", "").strip()
         gold = ex.get("output", "").strip()
 
-        # Build prompt
-        prompt = build_prompt(instruction, original, tokenizer)
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-        # Generate output
-        with torch.no_grad():
-            gen_tokens = model.generate(
-                **inputs,
-                max_new_tokens=inference_config.max_new_tokens,
-                temperature=inference_config.temperature,
-                top_p=inference_config.top_p,
-                do_sample=(inference_config.temperature > 0),
-                pad_token_id=tokenizer.eos_token_id,
-            )
-
-        # Only decode newly generated tokens (not the prompt)
-        new_tokens = gen_tokens[0][inputs["input_ids"].shape[1]:]
-        model_output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        messages = build_messages(instruction, original)
+        
+        if USE_API:
+            model_output = generate_api(messages)
+        else:
+            model_output = generate_local(messages, model, tokenizer)
 
         record = {
             "instruction": instruction,
@@ -122,14 +155,17 @@ def run_inference(save_excel: bool = False):
         }
         records.append(record)
         out_f.write(json.dumps(record) + "\n")
+        
+        if (i + 1) % 10 == 0:
+            print(f"Processed {i + 1}/{len(ds)} examples")
 
     out_f.close()
-    print(f"Saved predictions to: {output_path}")
+    print(f"\nSaved predictions to: {output_path}")
 
-    if save_excel:
+    if SAVE_EXCEL:
         excel_path = output_path.replace(".jsonl", ".xlsx")
         pd.DataFrame(records).to_excel(excel_path, index=False)
         print(f"Saved predictions to: {excel_path}")
 
 if __name__ == "__main__":
-    run_inference(save_excel=True)
+    run_inference()

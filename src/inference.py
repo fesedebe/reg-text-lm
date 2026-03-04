@@ -1,9 +1,10 @@
 #inference.py
-#Inference script for fine-tuned Qwen2.5-7B or Llama 3.1 8B models.
+#Inference script for (fine-tuned) Qwen2.5-7B or Llama 3.1 8B models.
 #Supports both local model loading and API calls to served model.
 #
-#Usage: "python inference.py" (qwen default) or "python inference.py --model llama"  
+#Usage: python inference.py --model qwen (or llama) [--base-only]
 
+import argparse
 import os
 import json
 
@@ -17,8 +18,6 @@ from config import (
     OUTPUT_DIR,
 )
 
-# local config
-USE_API = True  # True: call served model API, False: load model locally
 API_URL = "http://localhost:8000/v1"
 SAVE_EXCEL = True
 
@@ -34,16 +33,16 @@ def build_messages(instruction: str, text: str) -> list:
         {"role": "user", "content": user_content},
     ]
 
-def load_model_and_tokenizer():
-    #Load model locally with LoRA adapters
+def load_model_and_tokenizer(base_only=False):
+    #Load model locally, optionally without LoRA adapter
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-    from peft import PeftModel
-    
+
     lora_path = str(OUTPUT_DIR / "final_adapter")
-    
+    tokenizer_source = model_config.model_name if base_only else lora_path
+
     tokenizer = AutoTokenizer.from_pretrained(
-        lora_path, trust_remote_code=True
+        tokenizer_source, trust_remote_code=True
     )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -56,16 +55,19 @@ def load_model_and_tokenizer():
         bnb_4bit_compute_dtype=compute_dtype,
     )
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         model_config.model_name,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
     )
 
-    model = PeftModel.from_pretrained(base_model, lora_path)
-    model.eval()
+    if not base_only:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, lora_path)
+        print(f"Loaded LoRA adapter from {lora_path}")
 
+    model.eval()
     return model, tokenizer
 
 def generate_local(messages: list, model, tokenizer) -> str:
@@ -109,57 +111,79 @@ def generate_api(messages: list) -> str:
     return response.choices[0].message.content.strip()
 
 def run_inference():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--mode", choices=["local", "api"], default="local",
+                        help="local: load model directly, api: call served model")
+    parser.add_argument("--base-only", action="store_true",
+                        help="Skip LoRA adapter, run base model only")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="Override output directory")
+    parser.add_argument("--output-name", type=str, default=None,
+                        help="Override output filename (without extension)")
+    args, _ = parser.parse_known_args()
+
+    use_api = args.mode == "api"
     test_path = data_config.test_file
-    output_path = str(OUTPUT_DIR / "test_filtered_predictions.jsonl")
-    
-    mode = "API" if USE_API else "local"
+
+    # Build output path
+    if args.output_dir:
+        out_dir = args.output_dir
+    else:
+        out_dir = str(OUTPUT_DIR)
+    if args.output_name:
+        output_path = os.path.join(out_dir, f"{args.output_name}.jsonl")
+    else:
+        output_path = os.path.join(out_dir, "test_filtered_predictions.jsonl")
+
     print(f"Model: {model_config.model_name} ({model_config.model_key})")
-    print(f"Mode: {mode}")
+    print(f"Mode: {'API' if use_api else 'local'}")
+    print(f"Base only: {args.base_only}")
     print(f"Test data: {test_path}")
-    
-    if not USE_API:
-        print(f"Adapter: {OUTPUT_DIR / 'final_adapter'}")
+    print(f"Output: {output_path}")
+
+    if not use_api:
+        if not args.base_only:
+            print(f"Adapter: {OUTPUT_DIR / 'final_adapter'}")
     else:
         print(f"API URL: {API_URL}")
 
     ds = load_dataset("json", data_files={"test": test_path})["test"]
-    
+
     # Load model only if running locally
     model, tokenizer = None, None
-    if not USE_API:
-        model, tokenizer = load_model_and_tokenizer()
+    if not use_api:
+        model, tokenizer = load_model_and_tokenizer(base_only=args.base_only)
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    out_f = open(output_path, "w")
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     records = []
 
     print(f"\nRunning inference on {len(ds)} examples\n")
 
-    for i, ex in enumerate(ds):
-        instruction = ex.get("instruction", "").strip()
-        original = ex.get("input", "").strip()
-        gold = ex.get("output", "").strip()
+    with open(output_path, "w") as out_f:
+        for i, ex in enumerate(ds):
+            instruction = ex.get("instruction", "").strip()
+            original = ex.get("input", "").strip()
+            gold = ex.get("output", "").strip()
 
-        messages = build_messages(instruction, original)
-        
-        if USE_API:
-            model_output = generate_api(messages)
-        else:
-            model_output = generate_local(messages, model, tokenizer)
+            messages = build_messages(instruction, original)
 
-        record = {
-            "instruction": instruction,
-            "input": original,
-            "gold_output": gold,
-            "model_output": model_output,
-        }
-        records.append(record)
-        out_f.write(json.dumps(record) + "\n")
-        
-        if (i + 1) % 10 == 0:
-            print(f"Processed {i + 1}/{len(ds)} examples")
+            if use_api:
+                model_output = generate_api(messages)
+            else:
+                model_output = generate_local(messages, model, tokenizer)
 
-    out_f.close()
+            record = {
+                "instruction": instruction,
+                "input": original,
+                "gold_output": gold,
+                "model_output": model_output,
+            }
+            records.append(record)
+            out_f.write(json.dumps(record) + "\n")
+
+            if (i + 1) % 10 == 0:
+                print(f"Processed {i + 1}/{len(ds)} examples")
+
     print(f"\nSaved predictions to: {output_path}")
 
     if SAVE_EXCEL:

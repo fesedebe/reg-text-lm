@@ -210,3 +210,8 @@ __marimo__/
 #Data
 data/*
 output/*
+
+# Other
+local/
+CLAUDE.md
+.claude/

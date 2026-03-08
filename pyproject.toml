@@ -1,0 +1,11 @@
+[project]
+name = "reg-text-lm"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv",
+    "openai>=1.0.0",
+    "pandas",
+    "openpyxl",
+    "textstat>=0.7.13",
+]

@@ -8,8 +8,9 @@ transformers
 datasets
 accelerate
 peft
-bitsandbytes
+bitsandbytes ; sys_platform != "darwin"
 trl
 scikit-learn
 tensorboard
 tensorboardX
+textstat>=0.7.13

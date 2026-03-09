@@ -24,6 +24,8 @@ def compute_metrics(records: list[dict]) -> dict:
     readability_deltas = []
     change_rates = []
     length_ratios = []
+    input_fkgls = []
+    output_fkgls = []
 
     for r in records:
         inp = r["input"]
@@ -32,6 +34,8 @@ def compute_metrics(records: list[dict]) -> dict:
         fk_in = textstat.flesch_kincaid_grade(inp)
         fk_out = textstat.flesch_kincaid_grade(out)
         readability_deltas.append(fk_out - fk_in)
+        input_fkgls.append(fk_in)
+        output_fkgls.append(fk_out)
 
         similarity = SequenceMatcher(None, inp, out).ratio()
         change_rates.append(1 - similarity)
@@ -43,9 +47,13 @@ def compute_metrics(records: list[dict]) -> dict:
         "readability_deltas": readability_deltas,
         "change_rates": change_rates,
         "length_ratios": length_ratios,
+        "input_fkgls": input_fkgls,
+        "output_fkgls": output_fkgls,
         "avg_readability_delta": sum(readability_deltas) / n,
         "avg_change_rate": sum(change_rates) / n,
         "avg_length_ratio": sum(length_ratios) / n,
+        "avg_input_fkgl": sum(input_fkgls) / n,
+        "avg_output_fkgl": sum(output_fkgls) / n,
     }
 
 def display_name(key: str, names: dict[str, str] | None = None) -> str:

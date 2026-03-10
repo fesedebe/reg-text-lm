@@ -69,9 +69,11 @@ class TestLabelMasking:
         except ImportError:
             pytest.skip("trl not installed")
         
+        import torch
         config = SFTConfig(
             output_dir="test_output",
             completion_only_loss=True,
+            bf16=torch.cuda.is_available(),
         )
         
         assert config.completion_only_loss == True, \

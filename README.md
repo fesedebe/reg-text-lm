@@ -1,31 +1,35 @@
+# Legal Text Simplifier
 
-Fine-tuned LLM that rewrites legal text in plain English.
+Fine-tunes open-source 7B models (Qwen 2.5-7B-Instruct, Llama 3.1-8B-Instruct) using QLoRA to rewrite legal text in plain English. The model preserves legal meaning while simplifying text. Fine-tuned Qwen 2.5-7B matches or beats frontier API models (GPT-4o-mini, GPT-5.4) on this task, running locally at zero per-query cost.
 
-## Overview
+## Example
 
-Repo fine-tunes open-source models (Qwen2.5-7B or Llama 3.1 8B) using QLoRA to simplify legal language. The model is trained to:
+**Input** (grade level 20.1):
+> The applicant finally complained of an impairment of the principle of equality of arms, as its appeal on points of law had been declared inadmissible by the Supreme Court, while the appeal based on the same ground submitted by the defendant had been granted.
 
-- Simplify complex legal terminology
-- Preserve all information (dates, names, citations, conditions, exceptions)
-- Maintain accuracy while improving readability for non-legal folks
+**Output** (grade level 9.5):
+> Finally, the applicant complained about the infringement of the principle of equal treatment. The applicant's appeal on legal grounds was rejected by the Supreme Court. However, the defendant's appeal on the same grounds was accepted.
 
 ## Quick Start
 
 ```bash
 pip install -r requirements.txt
-python src/train.py
-python src/merge_adapter.py
-PLAINLAW_API_KEY="your-secret-key" python src/serve.py
+
+# Training
+python src/train.py --model qwen
+python src/merge.py --model qwen
+
+# Serving & Inference
+VLLM_API_KEY="your-key" python src/serve.py --model qwen
+python src/inference.py --model qwen
 ```
 
-## API Usage
-
-The model is served via vLLM with an OpenAI-compatible API. After obtaining credentials (server IP & API key), it can be called like this:
+Call the API:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://:8000/v1", api_key="")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-key")
 
 response = client.chat.completions.create(
     model="legal-simplifier",
@@ -37,15 +41,15 @@ print(response.choices[0].message.content)
 ## Project Structure
 
 ```
-├── src/           
-│   ├── config.py          # Shared configuration
-│   ├── data_loader.py     # Dataset loading and formatting
-│   ├── train.py           # QLoRA fine-tuning
-│   ├── inference.py       # Batch inference (local or API)
-│   ├── merge_adapter.py   # Merge LoRA adapter with base model
-│   └── serve.py           # vLLM API server
-├── scripts/       
-├── tests/         
-├── data/          # Training data
-└── output/        # Model checkpoints
+src/        # Core modules (training, inference, serving, evaluation)
+scripts/    # Data prep, external API prediction calls
+tests/      # pytest tests
+docs/       # Evaluation report and methodology
+data/       # Training and test data (gitignored)
+output/     # Model checkpoints and predictions (gitignored)
 ```
+
+## Evaluation
+
+- **Results and analysis:** [docs/eval_report.md](docs/eval_report.md)
+- **Methodology and setup:** [docs/methods.md](docs/methods.md)

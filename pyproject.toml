@@ -9,3 +9,6 @@ dependencies = [
     "openpyxl",
     "textstat>=0.7.13",
 ]
+
+[dependency-groups]
+dev = ["pytest"]

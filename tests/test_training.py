@@ -39,11 +39,14 @@ def get_tokenizer(model_key: str):
         pytest.skip("transformers not installed")
     
     model_name = MODEL_REGISTRY[model_key]["model_name"]
-    
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-    )
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+        )
+    except OSError:
+        pytest.skip(f"Could not download tokenizer for {model_name}")
     
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

@@ -78,6 +78,28 @@ Head-to-head comparisons between models are computed per-example on output FKGL:
 
 FKGL measures word length and sentence length, not comprehension. The test set is small (n=30), so margins between top models are directional not statistically significant. No semantic faithfulness metric is included. See [eval_report.md Section 5](eval_report.md#5-metric-limitations).
 
+### Pipeline
+
+```
+1. DATA PREP          2. TRAINING           3. MERGE              4. SERVING            5. EVAL
+─────────────         ──────────            ─────                 ───────               ────
+Excel (raw)           JSONL → HF Dataset    LoRA adapter          Merged model          Predictions
+  │                     │                    + base model           │                     │
+  ▼                     ▼                      │                    ▼                     ▼
+prepare_data.py       train.py                 ▼                  serve.py              eval.py
+  │                   (QLoRA SFTTrainer)      merge.py            (vLLM server)         (readability,
+  ▼                     │                      │                    │                    similarity,
+filter_data.py          ▼                      ▼                    ▼                    length ratio)
+  │                   final_adapter/          merged_model/        localhost:8000/v1
+  ▼                                                                 │
+qlora_{train,test}                                                  ▼
+  _filtered.jsonl                                              inference.py
+                                                               (local or API mode)
+                                                                    │
+                                                                    ▼
+                                                               predictions.jsonl
+```
+
 ### Reproduction
 
 ```bash

@@ -1,0 +1,15 @@
+output/
+data/
+.git/
+.github/
+.claude/
+CLAUDE.md
+docs/
+local/
+__pycache__/
+*.pyc
+.env
+.venv/
+.pytest_cache/
+*.egg-info/
+uv.lock

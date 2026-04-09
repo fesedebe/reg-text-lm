@@ -10,6 +10,8 @@ accelerate
 peft
 bitsandbytes ; sys_platform != "darwin"
 trl
+vllm
+huggingface-hub
 scikit-learn
 tensorboard
 tensorboardX
